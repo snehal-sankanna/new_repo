@@ -1,0 +1,247 @@
+#Start Coding here.
+#Importing necessary libraries
+import numpy as np
+import pandas as pd
+from tqdm.auto import tqdm
+from calendar import monthrange
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import GRU, Dense, Dropout
+from sklearn.metrics import mean_absolute_percentage_error
+from sklearn.preprocessing import MinMaxScaler, RobustScaler
+import random
+import tensorflow as tf
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_percentage_error,mean_absolute_error
+
+#Data for model building
+sqqq_finance_data_vol=inputData['Rise_Column']
+target_date = sqqq_finance_data_vol['Date'].max()
+sqqq_finance_data_vol=sqqq_finance_data_vol.set_index("Date")
+
+forecasting_columns=["Open","High","Low","Close","Daily_Volatility","Weekly_Volatility", "Monthly_Volatility","rise"]
+validation_months=1
+n_lookup=7
+n_features=8
+epochs=50
+batch_size=32
+close_col_index=3
+rise_col_index=7
+n_forecast=7
+scaler=MinMaxScaler()
+
+#Data Preparation
+x=sqqq_finance_data_vol
+y=sqqq_finance_data_vol
+x_scaled=scaler.fit_transform(x)
+y_scaled=scaler.fit_transform(y)
+
+#Splitting into input and target data
+def prep_data(dataset, n_lookup):
+    sequences = []
+    targets = []
+    for i in range(len(dataset) - n_lookup):
+        seq = x_scaled[i:i + n_lookup] 
+        target = y_scaled[i + n_lookup]
+        sequences.append(seq)
+        targets.append(target)
+    X = np.array(sequences)
+    y = np.array(targets)
+    return X, y
+X, y = prep_data(sqqq_finance_data_vol, n_lookup)
+
+#Train and validation data split
+def split_train_val(X, y, validation_months):
+    split_point = int(X.shape[0] - (22 * validation_months))
+    X_train, y_train = X[:split_point], y[:split_point]
+    X_val, y_val = X[split_point:], y[split_point:]
+
+    return X_train, X_val, y_train, y_val
+
+X_train, X_val, y_train, y_val = split_train_val(X, y, validation_months)
+
+#Stacked GRU model
+def VANILA_GRU(n_steps, n_features):
+    np.random.seed(3)
+    random.seed(125)
+    tf.random.set_seed(1236)
+    model = Sequential()
+    model.add(GRU(128, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2])))
+    #model.add(Dropout(0.2))    
+    model.add(Dense(n_features))
+    model.compile(optimizer='adam', loss='mse')
+    return model
+gru_model_sqqq = VANILA_GRU(n_forecast, n_features)
+# Fit the model
+gru_model_sqqq.fit(X_train, y_train, batch_size, epochs, validation_data=(X_val, y_val),verbose=False)
+
+# Inverse transform the scaled predictions and true values
+y_pred = gru_model_sqqq.predict(X_val)
+y_val_inv = scaler.inverse_transform(y_val)
+y_pred_inv = scaler.inverse_transform(y_pred)
+y_train_inv= scaler.inverse_transform(y_train)
+valid_df = pd.DataFrame(y_pred_inv, columns=forecasting_columns)
+#valid_df["TYPE"] = [f"VALIDATION_{str(i+1).zfill(2)}" for i in range(valid_df.shape[0])]
+valid_df["TYPE"] = [f"Forecast_V{str(valid_df.shape[0] - i - 1).zfill(2)}" for i in range(valid_df.shape[0])]
+
+valid_df["TARGET PERIOD"] = target_date
+valid_df["DATE"] = list(sqqq_finance_data_vol.index)[-22:]
+
+#Evaluation metrics
+def calculate_evaluation_metrics(y_true, y_pred):
+    r2 = r2_score(y_true, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    mse = mean_squared_error(y_true, y_pred)
+    mae = mean_absolute_error(y_true, y_pred)
+    mape = mean_absolute_percentage_error(y_true, y_pred)
+    return rmse, mse, mae, mape, r2
+
+rmse, mse, mae, mape, r2 = calculate_evaluation_metrics(y_val_inv[:, close_col_index], y_pred_inv[:, close_col_index])
+
+print2log(f"RMSE :: {rmse}")
+print2log(f"MSE :: {mse}")
+print2log(f"MAE :: {mae}")
+print2log(f"MAPE :: {mape}")
+print2log(f"R2 :: {r2}")
+
+valid_df["CLOSE MODEL MAPE"] = mape
+valid_df["CLOSE MODEL R2"] = r2
+#Forecast next 7 days values
+def forecast_future_values(model, x_val, n_forecast, scaler):
+    n_lookback, n_features = x_val.shape[1], x_val.shape[2]
+    last_sequence = x_val[-1].reshape(1, n_lookback, n_features)
+    forecast = []
+
+    for i in range(n_forecast):
+        next_val = model.predict(last_sequence, verbose=0)
+        forecast.append(next_val[0])
+        last_sequence = np.concatenate((last_sequence[:, 1:, :], next_val.reshape(1, 1, n_features)), axis=1)
+
+    forecast = np.array(forecast).reshape(-1, n_features)
+    forecast_original = scaler.inverse_transform(forecast)
+    return forecast_original
+
+#Forecast of close
+forecasted_values = forecast_future_values(gru_model_sqqq, X_val, n_forecast, scaler)
+forecasted_values_close = forecasted_values[:, close_col_index]
+forecasted_values_close
+#print2log(forecasted_values_close)
+
+#Create forecast dataframe
+def forecast_future_values(model, x_val, n_forecast, scaler):
+    n_lookback, n_features = x_val.shape[1], x_val.shape[2]
+    last_sequence = x_val[-1].reshape(1, n_lookback, n_features)
+    forecast = []
+
+    for i in range(n_forecast):
+        next_val = model.predict(last_sequence, verbose=0)
+        forecast.append(next_val[0])
+        last_sequence = np.concatenate((last_sequence[:, 1:, :], next_val.reshape(1, 1, n_features)), axis=1)
+
+    forecast = np.array(forecast).reshape(-1, n_features)
+    forecast_original = scaler.inverse_transform(forecast)
+    return forecast_original
+
+#Forecast of close
+forecasted_values = forecast_future_values(gru_model_sqqq, X_val, n_forecast, scaler)
+
+forecast_df_1 = pd.DataFrame(forecasted_values, columns = forecasting_columns)
+	
+forecast_df_1["TARGET PERIOD"] = target_date
+
+forecast_df_1["DATE"] = pd.date_range(start=target_date, periods=n_forecast+1, freq='B')[1:]
+
+#forecasted_values_close = forecasted_values[:, close_col_index]
+#forecasted_values_close
+#print2log(forecasted_values_close)
+
+#Create forecast dataframe
+def create_forecast_dataframe(X_train, y_train_inv, X_val, y_val_inv, y_pred_inv, forecasted_values_close, n_forecast, target_col_index):
+    start_date = sqqq_finance_data_vol.index[1]
+    end_date=sqqq_finance_data_vol.index[-1]
+    val_data_start_date = start_date+  pd.offsets.BDay(len(X_train))
+
+    val_data_date_range = pd.date_range(start=val_data_start_date, periods=len(X_val), freq='B')
+
+    actual_series_val = pd.Series(y_val_inv[:, target_col_index], name='Validation', index=val_data_date_range)
+    print(len(actual_series_val))
+    train_data_date_range = pd.date_range(start=start_date-pd.DateOffset(days=1), periods=len(y_train), freq='B')
+
+    actual_series_train = pd.Series(y_train_inv[:, target_col_index], name='Actual', index=train_data_date_range)
+    print(len(actual_series_train))
+
+    predicted_series = pd.Series(y_pred_inv[:, target_col_index], name='Predicted', index=val_data_date_range)
+    print(len(predicted_series))
+
+# Create a date range for the forecasted values starting from the last date in the validation data
+    last_date = end_date
+    forecasted_start_date = last_date + pd.DateOffset(days=1)
+    forecasted_date_range = pd.date_range(start=forecasted_start_date, periods=n_forecast, freq='B')
+
+# Combine the actual values of training and validation data
+    combined_actual_series = pd.concat([actual_series_train, actual_series_val])
+
+# Remove duplicates from the index
+    combined_actual_series = combined_actual_series.loc[~combined_actual_series.index.duplicated(keep='first')]
+
+    combined_actual_series.name = 'Actual'
+
+# Create a Series with 'Forecasted' values and use the forecasted date range as the index
+    forecasted_series = pd.Series(forecasted_values_close, name='Forecasted', index=forecasted_date_range)
+    print(len(forecasted_series))
+
+#Create a series of mape and r2 score
+    mape_series=pd.Series(mape, name='mape',index=val_data_date_range)
+    r2_series=pd.Series(r2, name='r2_score',index=val_data_date_range)
+
+# Combine all the series into a single DataFrame
+    forecast_df = pd.concat([combined_actual_series, predicted_series, forecasted_series,mape_series,r2_series], axis=1)
+    
+    forecast_df=forecast_df.reset_index()
+    forecast_df.rename(columns={'index': 'Date'}, inplace=True)
+
+    return forecast_df
+
+#Forecast dataframe
+forecast_df_gru_sqqq = create_forecast_dataframe(X_train, y_train_inv, X_val, y_val_inv, y_pred_inv, forecasted_values_close, n_forecast, close_col_index)
+
+#print2log(forecast_df_gru_sqqq)
+
+
+def CSGenerator(dataframe):
+    datatypes = dataframe.dtypes
+    variabletype = []
+    for i,value in enumerate(datatypes):
+        if (value=='float64') or (value=='float32') or (value=='float16') or (value=='float'):
+            datatypes[i] = 'Numerical'
+            variabletype.append('Float')
+        elif (value=='int64') or (value=='int32') or (value=='int16') or (value=='int8') or (value=='int'):
+            datatypes[i]='Numerical'
+            variabletype.append('Integer')
+        else:
+            datatypes[i]='Categorical'
+            variabletype.append('Text')
+    columnList = dataframe.columns
+    custom_data = []
+    output_data = {}
+    for i, column in enumerate(columnList):
+        output_data[column] = dataframe[column]
+        data_str = f"{column},{datatypes[i]},{variabletype[i]};"
+        custom_data.append(data_str)
+    print2log(''.join(custom_data))
+    return output_data
+
+
+
+actual_df = sqqq_finance_data_vol.copy()
+actual_df['TYPE'] = "ACTUAL"
+
+result_df = pd.concat([valid_df, forecast_df_1], ignore_index=True)
+result_df["MODEL NAME"] = "GRU"
+# result_df["CLOSE MODEL MAPE"] = mape
+# result_df["CLOSE MODEL R2"] = r2_score
+output = CSGenerator(result_df)
+return output
+
+
+valid_df["TYPE"] = [f"VALIDATION_{str(i+1).zfill(2)}" for i in range(valid_df.shape[0])]
+forecast_df_1["TYPE"] = [f"FORECAST_{str(i+1).zfill(2)}" for i in range(forecast_df_1.shape[0])]
